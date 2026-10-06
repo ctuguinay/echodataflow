@@ -27,18 +27,28 @@ Echodataflow streamlines echosounder data processing by combining [Prefect](http
 2. If you would like to run Echodataflow as an installed package, 
    install it from the repo like below:
    ```bash
-   pip install git+https://github.com/echostack-org/echodataflow.git  # install from repo
+   pip install https://github.com/echostack-org/echodataflow.git  # install from repo
    ```
+   This installs the `echodataflow-deploy` command, which can be run from any directory.
    If you instead would like to install Echodataflow to develop it,
    clone the repo and install it like below:
    ```bash
-   git clone git+https://github.com/echostack-org/echodataflow.git  # clone the repo
+   git clone https://github.com/echostack-org/echodataflow.git  # clone the repo
    pip install -e ".[test,lint,docs]"  # install in editable mode with dev tools
    ```
-   
+
+3. Pip install the `segmentation_inference` package that contains a version of the hake segmentation model.
+   ```bash
+   cd ..
+   git clone https://github.com/uw-echospace/segmentation_inference.git  # clone the repo
+   cd segmentation_inference
+   pip install -e .
+   ```
 
 
 ## Running the edge pipeline
+
+Note: Starting the server and running work pool is unnecessary if local Mac Prefect background services are running.
 
 1. Start the local Prefect server:
    ```shell
@@ -49,21 +59,30 @@ Echodataflow streamlines echosounder data processing by combining [Prefect](http
    ```shell
    prefect worker start --pool "local"
    ```
+   If you run into the error below:
+   ```shell
+   ValueError: `PREFECT_API_URL` must be set to start a Worker.
+   ```
+   Run:
+   ```shell
+   prefect config set PREFECT_API_URL=http://127.0.0.1:4200/api
+   ```
 
-3. Download the recipes from the [echodataflow-recipes repository](https://github.com/echostack-org/echodataflow-recipes) by clonining it to your computer:
+3. In a new terminal, download the recipes from the [echodataflow-recipes repository](https://github.com/echostack-org/echodataflow-recipes) by clonining it to your computer:
    ```
    cd REPO_DIRECTORY  # switch to where you want the recipes repo to sit
    git clone https://github.com/echostack-org/echodataflow-recipes.git
    ```
 
-4. Deploy and run the ship pipeline:
+4. Deploy and run the edge pipeline:
    ```shell
-   python -m echodataflow.deployment.deploy_cli run \
-   --source-mode local \
+   echodataflow-deploy run \
    --default-work-pool-name local \
    --param-config REPO_DIRECTORY/recipes/params/params_{MISSION_NAME}.yaml \
    --deploy-spec REPO_DIRECTORY/recipes/deploy/deploy_{MISSION_NAME}.yaml
    ```
+   The deployment source is selected from the `source` section in the deploy recipe.
+   If not set, it is default to using the local codebase.
 
 
 ## Running the cloud pipeline
@@ -82,17 +101,98 @@ Echodataflow streamlines echosounder data processing by combining [Prefect](http
 
 5. Deploy and run the cloud pipeline:
    ```bash
-   python -m echodataflow.deployment.deploy_cli run \
-   --source-mode local \
+   echodataflow-deploy run \
    --default-work-pool-name local \
    --param-config REPO_DIRECTORY/recipes/params/params_{MISSION_NAME}.yaml \
    --deploy-spec REPO_DIRECTORY/recipes/deploy/deploy_{MISSION_NAME}.yaml
    ```
+   The deployment source is selected from the `source` section in the deploy recipe.
+   If not set, it is default to using the local codebase.
 
 6. Start up system services that hosts the 2 sets of visualization
 
 
-## Running Local Prefect Services on macOS (launchd)
+## Configuring deployment concurrency
+
+Deploy recipes support two independent concurrency controls:
+
+- `concurrency_group` limits the total number of simultaneous runs shared by
+  multiple deployments in the same work pool. Echodataflow implements each group
+  as a Prefect work queue with a concurrency limit.
+- `deployment_concurrency` limits simultaneous runs of one deployment, regardless
+  of whether that deployment belongs to a concurrency group.
+
+### Shared concurrency across deployments
+
+Define groups at the top level of the deploy recipe, then assign flows to them by
+name:
+
+```yaml
+concurrency_groups:
+  acoustic_ingestion:
+    limit: 3
+
+flows:
+  ingest_NASC:
+    concurrency_group: acoustic_ingestion
+
+  ingest_MVBS:
+    concurrency_group: acoustic_ingestion
+```
+
+In this example, `ingest_NASC` and `ingest_MVBS` can use at most three running
+slots in total. Runs beyond the shared limit wait in the group's work queue. A
+concurrency group must remain within one work pool.
+
+Flows without `concurrency_group` use the work pool's default queue.
+
+### Per-deployment concurrency
+
+Use `deployment_concurrency` within a flow to limit only that deployment:
+
+```yaml
+flows:
+  ingest_NASC:
+    deployment_concurrency:
+      limit: 1
+      collision_strategy: CANCEL_NEW
+```
+
+Supported fields are:
+
+- `limit` (required): maximum number of concurrent runs for the deployment.
+- `collision_strategy` (optional): `ENQUEUE` or `CANCEL_NEW`; defaults to
+  `ENQUEUE`. `ENQUEUE` makes a new run wait for a slot, while `CANCEL_NEW`
+  cancels it when the limit is full.
+- `grace_period_seconds` (optional): time allowed for run infrastructure to start
+  before its concurrency slot is released. The value must be between 60 and
+  86,400 seconds.
+
+### Combining both controls
+
+The controls can be used together:
+
+```yaml
+concurrency_groups:
+  acoustic_ingestion:
+    limit: 3
+
+flows:
+  ingest_NASC:
+    concurrency_group: acoustic_ingestion
+    deployment_concurrency:
+      limit: 1
+      collision_strategy: CANCEL_NEW
+
+  ingest_MVBS:
+    concurrency_group: acoustic_ingestion
+```
+
+Here, the two deployments share three work-queue slots, while `ingest_NASC` may
+occupy only one of those slots. A run must satisfy both limits before it can run.
+
+
+## Running Local Prefect and auto mounting services on macOS (launchd)
 
 To run a local Prefect server and worker as background services on macOS, you can
 use launchd with the provided plist templates:
@@ -103,12 +203,15 @@ use launchd with the provided plist templates:
 These templates intentionally use direct one-line `ProgramArguments` commands, similar
 to `.service` `ExecStart` usage, with no wrapper shell script required.
 
+Included is a template and subsequent commands for auto mounting an SMB volume. These can be omitted if the volume is stable.
+
 1. Copy and customize the templates for your user:
    ```shell
    mkdir -p ~/.config/echodataflow ~/Library/LaunchAgents ~/.local/var/log/echodataflow
-   cp src/echodataflow/services/services.env.example ~/.config/echodataflow/services.env
+   cp src/echodataflow/services/services.env.example_local ~/.config/echodataflow/services.env
    cp src/echodataflow/services/deploy_prefect_server.launchd.plist ~/Library/LaunchAgents/org.echodataflow.prefect-server.plist
    cp src/echodataflow/services/deploy_prefect_worker.launchd.plist ~/Library/LaunchAgents/org.echodataflow.prefect-worker.plist
+   cp src/echodataflow/services/auto_mount.launchd.plist ~/Library/LaunchAgents/org.echodataflow.auto-mount.plist
    ```
 
 2. Edit `~/.config/echodataflow/services.env` as needed:
@@ -117,13 +220,16 @@ to `.service` `ExecStart` usage, with no wrapper shell script required.
    - Adjust `MAMBA_BIN`
    - Adjust `PREFECT_POOL`
    - Adjust `PREFECT_API_URL`
+   - Adjust SMB parameters as needed
 
 3. Load and start services:
    ```shell
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.echodataflow.prefect-server.plist
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.echodataflow.prefect-worker.plist
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.echodataflow.auto-mount.plist
    launchctl kickstart -k gui/$(id -u)/org.echodataflow.prefect-server
    launchctl kickstart -k gui/$(id -u)/org.echodataflow.prefect-worker
+   launchctl kickstart -k gui/$(id -u)/org.echodataflow.auto-mount
    ```
 
 4. Check status and logs:
@@ -131,15 +237,18 @@ to `.service` `ExecStart` usage, with no wrapper shell script required.
    # make sure "state = running" and "runs" not increasing
    launchctl print gui/$(id -u)/org.echodataflow.prefect-server
    launchctl print gui/$(id -u)/org.echodataflow.prefect-worker
+   launchctl print gui/$(id -u)/org.echodataflow.auto-mount
    # -f to follow logs in real time
    tail -n 100 ~/.local/var/log/echodataflow/prefect-server.err.log
    tail -n 100 ~/.local/var/log/echodataflow/prefect-worker.err.log
+   tail -n 100 ~/.local/var/log/echodataflow/auto-mount.err.log
    ```
 
 5. To stop and unload services:
    ```shell
    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/org.echodataflow.prefect-server.plist
    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/org.echodataflow.prefect-worker.plist
+   launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/org.echodataflow.auto-mount.plist
    ```
 
 6. SQLite health checks (local Prefect server):
@@ -171,7 +280,86 @@ Notes:
 - `database is locked` usually means SQLite write contention, not corruption.
 - For heavier multi-flow usage, move Prefect server DB to Postgres.
 
+## Running Local Prefect Services on Windows (Task Scheduler)
 
+To run a local Prefect server and worker as background services on Windows, you can
+use PowerShell with Windows Task Scheduler and the provided templates:
+
+- `src/echodataflow/services/deploy_prefect_server.windows.task.xml`
+- `src/echodataflow/services/deploy_prefect_worker.windows.task.xml`
+
+1. Copy and customize the service environment file:
+   ```powershell
+   New-Item -ItemType Directory -Force "$HOME\.config\echodataflow"
+   New-Item -ItemType Directory -Force "$HOME\.local\var\log\echodataflow"
+
+   Copy-Item src\echodataflow\services\services.env.example_local `
+     "$HOME\.config\echodataflow\services.env"
+   ```
+
+2. Edit `$HOME\.config\echodataflow\services.env` as needed:
+   - Adjust `ECHODATAFLOW_ENV`
+   - Adjust `ECHODATAFLOW_HOME`
+   - Adjust `ECHODATAFLOW_WORKDIR`
+   - Adjust `ECHODATAFLOW_LOG_DIR`
+   - Adjust `MAMBA_BIN`
+   - Adjust `PREFECT_POOL`
+   - Adjust `PREFECT_API_URL`
+
+3. Copy and customize the Task Scheduler XML templates:
+   ```powershell
+   Copy-Item src\echodataflow\services\deploy_prefect_server.windows.task.xml `
+     "$HOME\.config\echodataflow\prefect-server.task.xml"
+
+   Copy-Item src\echodataflow\services\deploy_prefect_worker.windows.task.xml `
+     "$HOME\.config\echodataflow\prefect-worker.task.xml"
+   ```
+
+4. Both XML templates are self-contained and read their runtime configuration
+   from `$HOME\.config\echodataflow\services.env`, so they do not need separate
+   `deploy_prefect_*.windows.ps1` files or hard-coded repository script paths.
+
+5. Register the scheduled tasks:
+   ```powershell
+   schtasks /Create /TN "echodataflow-prefect-server" `
+     /XML "$HOME\.config\echodataflow\prefect-server.task.xml" /F
+
+   schtasks /Create /TN "echodataflow-prefect-worker" `
+     /XML "$HOME\.config\echodataflow\prefect-worker.task.xml" /F
+   ```
+
+6. Start the tasks:
+   ```powershell
+   schtasks /Run /TN "echodataflow-prefect-server"
+   Start-Sleep -Seconds 10
+   schtasks /Run /TN "echodataflow-prefect-worker"
+   ```
+
+7. Check task status:
+   ```powershell
+   schtasks /Query /TN "echodataflow-prefect-server" /V /FO LIST
+   schtasks /Query /TN "echodataflow-prefect-worker" /V /FO LIST
+   ```
+
+8. Verify the local Prefect server:
+
+   Open:
+
+   ```text
+   http://127.0.0.1:4200
+   ```
+
+   The Prefect dashboard should load, and the worker should appear online under
+   **Work Pools**.
+
+9. To stop and delete the tasks:
+   ```powershell
+   schtasks /End /TN "echodataflow-prefect-worker"
+   schtasks /End /TN "echodataflow-prefect-server"
+
+   schtasks /Delete /TN "echodataflow-prefect-worker" /F
+   schtasks /Delete /TN "echodataflow-prefect-server" /F
+   ```
 
 ## License
 

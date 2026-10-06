@@ -14,6 +14,7 @@ pn.config.autoreload = False
 
 path_latest = Path("/media/volume/shimada_202506_volume/viz_data_cache_2026/iwcsp_2026")
 
+
 def update_cache_multi_freq():
     """
     Load latest MVBS data and create multi-frequency echograms.
@@ -26,15 +27,16 @@ def update_cache_multi_freq():
             "WBT 987766-15 ES70-7C_ES",
             "WBT 987753-15 ES120-7C_ES",
             "WBT 987771-15 ES200-7C_ES",
-            "WBT 987769-15 ES333-7C_ES"
+            "WBT 987769-15 ES333-7C_ES",
         ],
         vmin=-70,
         vmax=-36,
         cmap="viridis",
         opts=opts.Image(
-            width=1000, height=400,
+            width=1000,
+            height=400,
             tools=["pan", "box_zoom", "wheel_zoom", "reset"],
-        )
+        ),
     )
     return egram
 
@@ -46,7 +48,7 @@ def multi_freq_app():
     # Create initial plot
     egram = update_cache_multi_freq()
     plot_pane = pn.pane.HoloViews(egram)
-    
+
     # Simple update function that only runs every 10 minutes
     def scheduled_update():
         try:
@@ -55,13 +57,10 @@ def multi_freq_app():
             print("Plot updated at scheduled interval")
         except Exception as e:
             print(f"Error during scheduled update: {e}")
-    
+
     # Add ONLY the 10-minute callback - no other automatic updates
-    pn.state.add_periodic_callback(
-        scheduled_update,
-        period=10*60*1000  # Update every 10 mins
-    )
-    
+    pn.state.add_periodic_callback(scheduled_update, period=10 * 60 * 1000)  # Update every 10 mins
+
     return plot_pane
 
 
@@ -81,9 +80,10 @@ def update_cache_tricolor():
         vmax=-36,
         rgb_composite=True,
         opts=opts.RGB(
-            width=1200, height=600,
+            width=1200,
+            height=600,
             tools=["pan", "box_zoom", "wheel_zoom", "reset"],
-        )
+        ),
     )
     return tricolor
 
@@ -95,7 +95,7 @@ def tricolor_app():
     # Create initial plot
     tricolor = update_cache_tricolor()
     plot_pane = pn.pane.HoloViews(tricolor)
-    
+
     # Simple update function that only runs every 10 minutes
     def scheduled_update():
         try:
@@ -104,13 +104,10 @@ def tricolor_app():
             print("Plot updated at scheduled interval")
         except Exception as e:
             print(f"Error during scheduled update: {e}")
-    
+
     # Add ONLY the 10-minute callback - no other automatic updates
-    pn.state.add_periodic_callback(
-        scheduled_update,
-        period=10*60*1000  # Update every 10 mins
-    )
-    
+    pn.state.add_periodic_callback(scheduled_update, period=10 * 60 * 1000)  # Update every 10 mins
+
     return plot_pane
 
 
@@ -119,21 +116,14 @@ def create_contours_overlay():
     Convert hake contours dataframe into HoloViews paths.
     """
 
-    contours_df = pd.read_csv(
-        path_latest / "latest_contours.csv"
-    )
+    contours_df = pd.read_csv(path_latest / "latest_contours.csv")
 
     # Convert string representations back to arrays
     contours_df["depth"] = contours_df["depth"].apply(
-        lambda x: np.fromstring(
-            x.strip("[]"),
-            sep=" "
-        )
+        lambda x: np.fromstring(x.strip("[]"), sep=" ")
     )
     contours_df["time"] = contours_df["time"].apply(
-        lambda x: np.array(
-            x.strip("[]").replace("'", "").split()
-        )
+        lambda x: np.array(x.strip("[]").replace("'", "").split())
     )
 
     # Set to datetime
@@ -177,7 +167,7 @@ def tricolor_with_contour_app():
     contours_hv = create_contours_overlay()
     tricolor_with_contour = tricolor() * contours_hv
     plot_pane = pn.pane.HoloViews(tricolor_with_contour)
-    
+
     # Simple update function that only runs every 10 minutes
     def scheduled_update():
         try:
@@ -186,13 +176,10 @@ def tricolor_with_contour_app():
             print("Plot updated at scheduled interval")
         except Exception as e:
             print(f"Error during scheduled update: {e}")
-    
+
     # Add ONLY the 10-minute callback - no other automatic updates
-    pn.state.add_periodic_callback(
-        scheduled_update,
-        period=10*60*1000  # Update every 10 mins
-    )
-    
+    pn.state.add_periodic_callback(scheduled_update, period=10 * 60 * 1000)  # Update every 10 mins
+
     return plot_pane
 
 
